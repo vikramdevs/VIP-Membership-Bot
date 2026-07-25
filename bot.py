@@ -78,10 +78,10 @@ def plans_keyboard() -> InlineKeyboardMarkup:
     """Build the subscription plan selection keyboard."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="7 Days — ₹99", callback_data="plan_7")],
-            [InlineKeyboardButton(text="1 Month — ₹199", callback_data="plan_1")],
-            [InlineKeyboardButton(text="3 Months — ₹499", callback_data="plan_3")],
-            [InlineKeyboardButton(text="6 Months — ₹899", callback_data="plan_6")],
+            [InlineKeyboardButton(text="7 Days - Rs 99", callback_data="plan_7")],
+            [InlineKeyboardButton(text="1 Month - Rs 199", callback_data="plan_1")],
+            [InlineKeyboardButton(text="3 Months - Rs 499", callback_data="plan_3")],
+            [InlineKeyboardButton(text="6 Months - Rs 899", callback_data="plan_6")],
         ]
     )
 
@@ -112,7 +112,7 @@ def is_admin(user_id: int) -> bool:
 async def start(message: Message) -> None:
     """Show available plans to a user."""
     await message.answer(
-        "<b>🔥 VIP User Premium</b>\n\n"
+        "<b>VIP User Premium</b>\n\n"
         "Choose a subscription plan to receive your secure UPI payment QR code.",
         reply_markup=plans_keyboard(),
     )
@@ -133,8 +133,8 @@ async def choose_plan(callback: CallbackQuery) -> None:
     await callback.message.answer_photo(
         photo=FSInputFile(qr_path),
         caption=(
-            f"<b>✅ {escape(plan_name)} Membership</b>\n\n"
-            f"💰 <b>Amount:</b> ₹{amount}\n\n"
+            f"<b>{escape(plan_name)} Membership</b>\n\n"
+            f"<b>Amount:</b> Rs {amount}\n\n"
             "<b>How to pay</b>\n"
             "1. Scan this QR code, or pay to the UPI ID below.\n"
             f"2. UPI ID: <code>{escape(UPI_ID)}</code>\n"
@@ -150,30 +150,30 @@ async def receive_payment(message: Message) -> None:
     """Forward a payment screenshot to the admin for approval."""
     user = await get_user(message.from_user.id)
     if user is None:
-        await message.answer("❌ Please choose a subscription plan before sending a screenshot.")
+        await message.answer("Please choose a subscription plan before sending a screenshot.")
         return
 
     if user[5] == "Approved":
-        await message.answer("✅ Your membership is already approved. Please check your messages.")
+        await message.answer("Your membership is already approved. Please check your messages.")
         return
 
     if user[5] == "Rejected":
-        await message.answer("❌ This payment was rejected. Please choose a plan and submit a new payment.")
+        await message.answer("This payment was rejected. Please choose a plan and submit a new payment.")
         return
 
     username = f"@{message.from_user.username}" if message.from_user.username else "Not set"
     caption = (
-        "<b>💳 New Payment Verification Request</b>\n\n"
+        "<b>New Payment Verification Request</b>\n\n"
         f"<b>Name:</b> {escape(message.from_user.full_name)}\n"
         f"<b>User ID:</b> <code>{message.from_user.id}</code>\n"
         f"<b>Username:</b> {escape(username)}\n"
         f"<b>Plan:</b> {escape(str(user[3]))}\n"
-        f"<b>Amount:</b> ₹{user[4]}"
+        f"<b>Amount:</b> Rs {user[4]}"
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Approve", callback_data=f"approve:{message.from_user.id}")],
-            [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject:{message.from_user.id}")],
+            [InlineKeyboardButton(text="Approve", callback_data=f"approve:{message.from_user.id}")],
+            [InlineKeyboardButton(text="Reject", callback_data=f"reject:{message.from_user.id}")],
         ]
     )
 
@@ -186,10 +186,10 @@ async def receive_payment(message: Message) -> None:
         )
     except TelegramAPIError:
         logger.exception("Could not forward payment screenshot for user %s", message.from_user.id)
-        await message.answer("❌ We could not submit your screenshot. Please try again shortly.")
+        await message.answer("We could not submit your screenshot. Please try again shortly.")
         return
 
-    await message.answer("✅ Screenshot received. Please wait for admin verification.")
+    await message.answer("Screenshot received. Please wait for admin verification.")
 
 
 async def process_admin_callback(callback: CallbackQuery) -> int | None:
@@ -256,7 +256,7 @@ async def approve(callback: CallbackQuery) -> None:
     try:
         join_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Join Premium Channel", url=invite.invite_link)]
+                [InlineKeyboardButton(text="Join Premium Channel", url=invite.invite_link)]
             ]
         )
         await save_join_request_link(user_id, invite.invite_link)
@@ -267,7 +267,7 @@ async def approve(callback: CallbackQuery) -> None:
             return
         await bot.send_message(
             user_id,
-            "<b>🎉 Payment Approved</b>\n\n"
+            "<b>Payment Approved</b>\n\n"
             "Welcome to VIP Premium. Use the button below to request access to the "
             "private channel. Your request will be approved automatically while your "
             "membership is active.\n\n"
@@ -279,7 +279,7 @@ async def approve(callback: CallbackQuery) -> None:
         await callback.answer("Could not notify this user. Please try again.", show_alert=True)
         return
 
-    await mark_admin_message(callback, "✅ APPROVED")
+    await mark_admin_message(callback, "APPROVED")
     await callback.answer("Payment approved")
 
 
@@ -323,7 +323,7 @@ async def reject(callback: CallbackQuery) -> None:
     try:
         await bot.send_message(
             user_id,
-            "<b>❌ Payment Rejected</b>\n\n"
+            "<b>Payment Rejected</b>\n\n"
             "We could not verify your payment. Please contact the administrator for assistance.",
         )
         await update_status(user_id, "Rejected")
@@ -332,7 +332,7 @@ async def reject(callback: CallbackQuery) -> None:
         await callback.answer("Could not reject this payment. Please try again.", show_alert=True)
         return
 
-    await mark_admin_message(callback, "❌ REJECTED")
+    await mark_admin_message(callback, "REJECTED")
     await callback.answer("Payment rejected")
 
 
@@ -345,11 +345,11 @@ async def stats(message: Message) -> None:
         total_users(), approved_users(), rejected_users(), pending_users()
     )
     await message.answer(
-        "<b>📊 Bot Statistics</b>\n\n"
-        f"👥 <b>Total users:</b> {total}\n"
-        f"✅ <b>Approved:</b> {approved}\n"
-        f"❌ <b>Rejected:</b> {rejected}\n"
-        f"⏳ <b>Pending:</b> {len(pending)}"
+        "<b>Bot Statistics</b>\n\n"
+        f"<b>Total users:</b> {total}\n"
+        f"<b>Approved:</b> {approved}\n"
+        f"<b>Rejected:</b> {rejected}\n"
+        f"<b>Pending:</b> {len(pending)}"
     )
 
 
@@ -360,17 +360,17 @@ async def pending(message: Message) -> None:
         return
     users = await pending_users()
     if not users:
-        await message.answer("✅ There are no pending payment verifications.")
+        await message.answer("There are no pending payment verifications.")
         return
 
-    lines = ["<b>⏳ Pending Payments</b>"]
+    lines = ["<b>Pending Payments</b>"]
     for user in users:
         lines.extend(
             [
                 "",
-                f"👤 <b>{escape(str(user[2]))}</b>",
-                f"🆔 <code>{user[0]}</code>",
-                f"📦 {escape(str(user[3]))} — ₹{user[4]}",
+                f"<b>{escape(str(user[2]))}</b>",
+                f"ID: <code>{user[0]}</code>",
+                f"{escape(str(user[3]))} - Rs {user[4]}",
             ]
         )
     await message.answer("\n".join(lines))
@@ -385,8 +385,8 @@ def format_membership_date(value: str | None) -> str:
 def format_member(user: tuple[object, ...], date_index: int) -> str:
     """Create one concise admin-facing membership line."""
     return (
-        f"<code>{user[0]}</code> — {escape(str(user[2]))}\n"
-        f"{escape(str(user[3]))} — expires: {format_membership_date(user[date_index])}"
+        f"<code>{user[0]}</code> - {escape(str(user[2]))}\n"
+        f"{escape(str(user[3]))} - expires: {format_membership_date(user[date_index])}"
     )
 
 
