@@ -204,6 +204,72 @@ async def get_user(user_id: int) -> UserRow | None:
         return await cursor.fetchone()
 
 
+async def delete_user(user_id: int) -> bool:
+    """Permanently remove one user's membership record."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_all_users() -> list[UserRow]:
+    """Return every user for the administrator panel."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT * FROM users ORDER BY user_id")
+        return await cursor.fetchall()
+
+
+async def get_active_users() -> list[UserRow]:
+    """Return approved memberships that are active at the current IST time."""
+    now = datetime_to_storage(ist_now())
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM users
+            WHERE status = 'Approved' AND expiry_date IS NOT NULL AND expiry_date > ?
+            ORDER BY expiry_date
+            """,
+            (now,),
+        )
+        return await cursor.fetchall()
+
+
+async def get_expired_users() -> list[UserRow]:
+    """Return memberships whose expiry time has passed, whether or not scheduled yet."""
+    now = datetime_to_storage(ist_now())
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM users
+            WHERE expiry_date IS NOT NULL AND expiry_date <= ?
+            ORDER BY expiry_date DESC
+            """,
+            (now,),
+        )
+        return await cursor.fetchall()
+
+
+async def search_user(user_id: int) -> UserRow | None:
+    """Find a user by their Telegram user ID."""
+    return await get_user(user_id)
+
+
+async def reset_membership(user_id: int) -> bool:
+    """Return a user to pending state without deleting their payment record."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            UPDATE users
+            SET status = 'Pending', approved_at = NULL, expiry_date = NULL,
+                expired_at = NULL, join_request_link = NULL
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def save_join_request_link(user_id: int, invite_link: str) -> None:
     """Store the reusable join-request invite link issued to a member."""
     async with aiosqlite.connect(DB_NAME) as db:
