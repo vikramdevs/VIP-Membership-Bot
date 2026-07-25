@@ -1,11 +1,22 @@
 """SQLite persistence helpers for the membership bot."""
 
-from datetime import datetime, timedelta, timezone
-from typing import Literal, TypeAlias
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Final, Literal, TypeAlias
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 
 DB_NAME = "database.db"
+IST: Final = ZoneInfo("Asia/Kolkata")
+UTC: Final = ZoneInfo("UTC")
+PLAN_DURATIONS: Final[dict[str, int]] = {
+    "7 Days": 7,
+    "1 Month": 30,
+    "3 Months": 90,
+    "6 Months": 180,
+    "12 Months": 365,
+}
 UserRow: TypeAlias = tuple[
     int,
     str | None,
@@ -22,24 +33,52 @@ UserRow: TypeAlias = tuple[
 MembershipState: TypeAlias = Literal["active", "expired", "inactive", "missing"]
 
 
-def utc_now() -> datetime:
-    """Return the current timezone-aware UTC time."""
-    return datetime.now(timezone.utc)
+@dataclass(frozen=True)
+class ApprovalResult:
+    """The timestamps and plan duration recorded for an approved membership."""
+
+    approved_at: datetime
+    expiry_date: datetime
+    days_granted: int
+    plan: str
+
+
+def ist_now() -> datetime:
+    """Return the current timezone-aware Indian Standard Time."""
+    return datetime.now(IST)
 
 
 def datetime_to_storage(value: datetime) -> str:
-    """Format a UTC datetime for lexicographically sortable SQLite storage."""
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+    """Format an aware datetime as an IST SQLite timestamp."""
+    if value.tzinfo is None:
+        raise ValueError("Cannot store a naive datetime.")
+    return value.astimezone(IST).isoformat(timespec="seconds")
 
 
 def datetime_from_storage(value: str | None) -> datetime | None:
-    """Parse a stored UTC datetime, accepting legacy SQLite values if present."""
+    """Parse a stored timestamp and return a timezone-aware IST datetime."""
     if value is None:
         return None
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(IST)
+
+
+def plan_duration(plan: str) -> int:
+    """Return the fixed number of days assigned to a membership plan."""
+    try:
+        return PLAN_DURATIONS[plan]
+    except KeyError as exc:
+        raise ValueError(f"Unknown membership plan: {plan!r}") from exc
+
+
+def calculate_expiry(plan: str, current_time: datetime) -> tuple[datetime, int]:
+    """Calculate an exact plan expiry from a timezone-aware base time."""
+    if current_time.tzinfo is None:
+        raise ValueError("Cannot calculate expiry from a naive datetime.")
+    days = plan_duration(plan)
+    return current_time.astimezone(IST) + timedelta(days=days), days
 
 
 async def init_db() -> None:
@@ -69,6 +108,25 @@ async def init_db() -> None:
         for column, statement in migrations.items():
             if column not in columns:
                 await db.execute(statement)
+        cursor = await db.execute(
+            "SELECT user_id, approved_at, expiry_date, expired_at FROM users"
+        )
+        for user_id, approved_at, expiry_date, expired_at in await cursor.fetchall():
+            normalized = tuple(
+                datetime_to_storage(parsed)
+                if (parsed := datetime_from_storage(value)) is not None
+                else None
+                for value in (approved_at, expiry_date, expired_at)
+            )
+            if normalized != (approved_at, expiry_date, expired_at):
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET approved_at = ?, expiry_date = ?, expired_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (*normalized, user_id),
+                )
         await db.commit()
 
 
@@ -100,29 +158,36 @@ async def save_user(
         await db.commit()
 
 
-async def approve_membership(user_id: int) -> datetime | None:
+async def approve_membership(user_id: int) -> ApprovalResult | None:
     """Approve a plan and extend an existing unexpired membership if applicable."""
-    now = utc_now()
+    now = ist_now()
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "SELECT expiry_days, expiry_date FROM users WHERE user_id = ?", (user_id,)
+            "SELECT plan, expiry_date FROM users WHERE user_id = ?", (user_id,)
         )
         row = await cursor.fetchone()
         if row is None:
             return None
-        current_expiry = datetime_from_storage(row[1])
+        plan, expiry_value = row
+        current_expiry = datetime_from_storage(expiry_value)
         base_date = current_expiry if current_expiry and current_expiry > now else now
-        expiry_date = base_date + timedelta(days=int(row[0]))
+        expiry_date, days_granted = calculate_expiry(plan, base_date)
         await db.execute(
             """
             UPDATE users
-            SET status = 'Approved', approved_at = ?, expiry_date = ?, expired_at = NULL
+            SET status = 'Approved', approved_at = ?, expiry_date = ?, expired_at = NULL,
+                expiry_days = ?
             WHERE user_id = ?
             """,
-            (datetime_to_storage(now), datetime_to_storage(expiry_date), user_id),
+            (
+                datetime_to_storage(now),
+                datetime_to_storage(expiry_date),
+                days_granted,
+                user_id,
+            ),
         )
         await db.commit()
-        return expiry_date
+        return ApprovalResult(now, expiry_date, days_granted, plan)
 
 
 async def update_status(user_id: int, status: str) -> None:
@@ -151,7 +216,7 @@ async def save_join_request_link(user_id: int, invite_link: str) -> None:
 
 async def membership_state(user_id: int) -> MembershipState:
     """Return whether a user can currently have a channel join request approved."""
-    now = utc_now()
+    now = ist_now()
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             "SELECT status, expiry_date FROM users WHERE user_id = ?", (user_id,)
@@ -177,7 +242,7 @@ async def pending_users() -> list[UserRow]:
 
 async def active_users() -> list[UserRow]:
     """Return memberships that have not yet expired, including pending renewals."""
-    now = datetime_to_storage(utc_now())
+    now = datetime_to_storage(ist_now())
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             """
@@ -201,7 +266,7 @@ async def expired_users() -> list[UserRow]:
 
 async def memberships_due_for_expiry() -> list[UserRow]:
     """Return memberships whose expiry time has passed and are not yet removed."""
-    now = datetime_to_storage(utc_now())
+    now = datetime_to_storage(ist_now())
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             """
@@ -219,7 +284,7 @@ async def mark_expired(user_id: int) -> None:
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "UPDATE users SET status = 'Expired', expired_at = ? WHERE user_id = ?",
-            (datetime_to_storage(utc_now()), user_id),
+            (datetime_to_storage(ist_now()), user_id),
         )
         await db.commit()
 
@@ -228,7 +293,7 @@ async def extend_membership(user_id: int, days: int) -> datetime | None:
     """Add days to a membership, starting from its current expiry or now."""
     if days <= 0:
         raise ValueError("days must be positive")
-    now = utc_now()
+    now = ist_now()
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT expiry_date FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()

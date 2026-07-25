@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Final
@@ -37,6 +38,7 @@ from database import (
     extend_membership,
     get_user,
     init_db,
+    IST,
     mark_expired,
     membership_state,
     pending_users,
@@ -260,8 +262,8 @@ async def approve(callback: CallbackQuery) -> None:
             ]
         )
         await save_join_request_link(user_id, invite.invite_link)
-        expiry_date = await approve_membership(user_id)
-        if expiry_date is None:
+        approval = await approve_membership(user_id)
+        if approval is None:
             logger.error("User %s disappeared before approval was saved", user_id)
             await callback.answer("Membership record no longer exists.", show_alert=True)
             return
@@ -271,7 +273,8 @@ async def approve(callback: CallbackQuery) -> None:
             "Welcome to VIP Premium. Use the button below to request access to the "
             "private channel. Your request will be approved automatically while your "
             "membership is active.\n\n"
-            f"Your membership expires on <b>{expiry_date:%d %b %Y %H:%M UTC}</b>.",
+            "Your membership expires on\n\n"
+            f"<b>{format_ist_datetime(approval.expiry_date)}</b>.",
             reply_markup=join_keyboard,
         )
     except TelegramAPIError:
@@ -279,6 +282,14 @@ async def approve(callback: CallbackQuery) -> None:
         await callback.answer("Could not notify this user. Please try again.", show_alert=True)
         return
 
+    logger.info(
+        "Approved User: %s\nPlan: %s\nGranted: %s\nCurrent Time: %s\nExpiry: %s",
+        user_id,
+        approval.plan,
+        approval.days_granted,
+        format_ist_datetime(approval.approved_at).replace("\n", " "),
+        format_ist_datetime(approval.expiry_date).replace("\n", " "),
+    )
     await mark_admin_message(callback, "APPROVED")
     await callback.answer("Payment approved")
 
@@ -376,10 +387,15 @@ async def pending(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+def format_ist_datetime(value: datetime) -> str:
+    """Display a timezone-aware timestamp in Indian Standard Time."""
+    return value.astimezone(IST).strftime("%d %b %Y\n%I:%M %p IST")
+
+
 def format_membership_date(value: str | None) -> str:
     """Format a stored membership timestamp for an administrator."""
     parsed = datetime_from_storage(value)
-    return parsed.strftime("%d %b %Y %H:%M UTC") if parsed else "Not set"
+    return format_ist_datetime(parsed) if parsed else "Not set"
 
 
 def format_member(user: tuple[object, ...], date_index: int) -> str:
@@ -443,7 +459,7 @@ async def extend(message: Message) -> None:
         return
     await message.answer(
         f"Membership extended for <code>{user_id}</code> until "
-        f"<b>{expiry_date:%d %b %Y %H:%M UTC}</b>."
+        f"<b>{format_ist_datetime(expiry_date)}</b>."
     )
     logger.info(
         "Admin %s extended user %s by %s days", message.from_user.id, user_id, days
