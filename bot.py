@@ -90,16 +90,23 @@ PLANS: Final[dict[str, tuple[str, int, int]]] = {
     "plan_3": ("3 Months", 499, 90),
     "plan_6": ("6 Months", 899, 180),
 }
+DIVIDER: Final[str] = "━━━━━━━━━━━━━━━━━━━━"
+
+
+def premium_header(title: str, icon: str = "") -> str:
+    """Render the consistent premium UI heading used by all bot screens."""
+    label = f"{icon} {title}" if icon else title
+    return f"{DIVIDER}\n<b>{label}</b>\n{DIVIDER}"
 
 
 def plans_keyboard() -> InlineKeyboardMarkup:
     """Build the subscription plan selection keyboard."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="7 Days - Rs 99", callback_data="plan_7")],
-            [InlineKeyboardButton(text="1 Month - Rs 199", callback_data="plan_1")],
-            [InlineKeyboardButton(text="3 Months - Rs 499", callback_data="plan_3")],
-            [InlineKeyboardButton(text="6 Months - Rs 899", callback_data="plan_6")],
+            [InlineKeyboardButton(text="7 Days — Rs 99", callback_data="plan_7")],
+            [InlineKeyboardButton(text="1 Month — Rs 199", callback_data="plan_1")],
+            [InlineKeyboardButton(text="3 Months — Rs 499", callback_data="plan_3")],
+            [InlineKeyboardButton(text="6 Months — Rs 899", callback_data="plan_6")],
         ]
     )
 
@@ -130,8 +137,13 @@ def is_admin(user_id: int) -> bool:
 async def start(message: Message) -> None:
     """Show available plans to a user."""
     await message.answer(
-        "<b>VIP User Premium</b>\n\n"
-        "Choose a subscription plan to receive your secure UPI payment QR code.",
+        f"{premium_header('VIP User Premium', '⭐')}\n\n"
+        "Choose your membership plan.\n\n"
+        "• Instant activation after approval\n"
+        "• Secure UPI payment\n"
+        "• Automatic expiry management\n"
+        "• Private premium channel access\n\n"
+        "Select a plan below.",
         reply_markup=plans_keyboard(),
     )
 
@@ -151,13 +163,17 @@ async def choose_plan(callback: CallbackQuery) -> None:
     await callback.message.answer_photo(
         photo=FSInputFile(qr_path),
         caption=(
-            f"<b>{escape(plan_name)} Membership</b>\n\n"
-            f"<b>Amount:</b> Rs {amount}\n\n"
-            "<b>How to pay</b>\n"
-            "1. Scan this QR code, or pay to the UPI ID below.\n"
-            f"2. UPI ID: <code>{escape(UPI_ID)}</code>\n"
-            f"3. Payment note: <code>{note}</code>\n\n"
-            "After payment, send the payment screenshot in this chat for verification."
+            f"{premium_header('Payment', '💳')}\n\n"
+            f"<b>Plan:</b>\n{escape(plan_name)}\n\n"
+            f"<b>Price:</b>\nRs {amount}\n\n"
+            "Please complete the payment using the QR code below.\n\n"
+            "<b>After payment</b>\n"
+            "1. Take a screenshot.\n"
+            "2. Send it here.\n"
+            "3. Wait for admin verification.\n\n"
+            f"<b>UPI ID:</b> <code>{escape(UPI_ID)}</code>\n"
+            f"<b>Payment Note:</b> <code>{note}</code>\n\n"
+            "Your access will be activated immediately after approval."
         ),
     )
     await callback.answer("Plan selected")
@@ -168,20 +184,20 @@ async def receive_payment(message: Message) -> None:
     """Forward a payment screenshot to the admin for approval."""
     user = await get_user(message.from_user.id)
     if user is None:
-        await message.answer("Please choose a subscription plan before sending a screenshot.")
+        await message.answer(f"{premium_header('Membership Required', '⚠️')}\n\nChoose a membership plan before uploading a payment screenshot.")
         return
 
     if user[5] == "Approved":
-        await message.answer("Your membership is already approved. Please check your messages.")
+        await message.answer(f"{premium_header('Membership Active', '✅')}\n\nYour membership is already active. Check your previous message for the channel access button.")
         return
 
     if user[5] == "Rejected":
-        await message.answer("This payment was rejected. Please choose a plan and submit a new payment.")
+        await message.answer(f"{premium_header('Payment Rejected', '⚠️')}\n\nChoose a plan and submit a new payment screenshot for verification.")
         return
 
     username = f"@{message.from_user.username}" if message.from_user.username else "Not set"
     caption = (
-        "<b>New Payment Verification Request</b>\n\n"
+        f"{premium_header('Payment Verification', '💳')}\n\n"
         f"<b>Name:</b> {escape(message.from_user.full_name)}\n"
         f"<b>User ID:</b> <code>{message.from_user.id}</code>\n"
         f"<b>Username:</b> {escape(username)}\n"
@@ -204,10 +220,16 @@ async def receive_payment(message: Message) -> None:
         )
     except TelegramAPIError:
         logger.exception("Could not forward payment screenshot for user %s", message.from_user.id)
-        await message.answer("We could not submit your screenshot. Please try again shortly.")
+        await message.answer(f"{premium_header('Submission Unavailable', '⚠️')}\n\nWe could not submit your screenshot. Please try again shortly.")
         return
 
-    await message.answer("Screenshot received. Please wait for admin verification.")
+    await message.answer(
+        f"{premium_header('Payment Submitted', '✅')}\n\n"
+        "Your payment screenshot has been received successfully.\n\n"
+        "<b>Status:</b>\nWaiting for admin verification.\n\n"
+        "<b>Estimated approval time:</b>\n1–10 minutes.\n\n"
+        "Please do not send multiple screenshots."
+    )
 
 
 async def process_admin_callback(callback: CallbackQuery) -> int | None:
@@ -285,12 +307,12 @@ async def approve(callback: CallbackQuery) -> None:
             return
         await bot.send_message(
             user_id,
-            "<b>Payment Approved</b>\n\n"
-            "Welcome to VIP Premium. Use the button below to request access to the "
-            "private channel. Your request will be approved automatically while your "
-            "membership is active.\n\n"
-            "Your membership expires on\n\n"
-            f"<b>{format_ist_datetime(approval.expiry_date)}</b>.",
+            f"{premium_header('Membership Activated', '🎉')}\n\n"
+            "Welcome to VIP User Premium.\n\n"
+            f"<b>Plan:</b>\n{escape(approval.plan)}\n\n"
+            "<b>Status:</b>\nActive\n\n"
+            f"<b>Expires:</b>\n{format_ist_datetime(approval.expiry_date)}\n\n"
+            "Your subscription is now active. Tap the button below to join the premium channel.",
             reply_markup=join_keyboard,
         )
     except TelegramAPIError:
@@ -306,7 +328,7 @@ async def approve(callback: CallbackQuery) -> None:
         format_ist_datetime(approval.approved_at).replace("\n", " "),
         format_ist_datetime(approval.expiry_date).replace("\n", " "),
     )
-    await mark_admin_message(callback, "APPROVED")
+    await mark_admin_message(callback, "Approved")
     await callback.answer("Payment approved")
 
 
@@ -327,9 +349,15 @@ async def handle_join_request(request: ChatJoinRequest) -> None:
 
         await bot.decline_chat_join_request(chat_id=CHANNEL_ID, user_id=user_id)
         if state == "expired":
-            await bot.send_message(user_id, "Your membership has expired. Please renew.")
+            await bot.send_message(
+                user_id,
+                f"{premium_header('Membership Expired', '⚠️')}\n\n"
+                "Your subscription has ended.\n\n"
+                "Premium access has been removed.\n\n"
+                "Renew anytime to regain access.",
+            )
         else:
-            await bot.send_message(user_id, "No active membership found.")
+            await bot.send_message(user_id, f"{premium_header('Membership Required', '🔒')}\n\nNo active membership was found for this channel request.")
         logger.info("Declined join request for user %s with state=%s", user_id, state)
     except TelegramAPIError:
         logger.exception("Could not process join request for user %s", user_id)
@@ -350,8 +378,13 @@ async def reject(callback: CallbackQuery) -> None:
     try:
         await bot.send_message(
             user_id,
-            "<b>Payment Rejected</b>\n\n"
-            "We could not verify your payment. Please contact the administrator for assistance.",
+            f"{premium_header('Payment Rejected', '⚠️')}\n\n"
+            "Unfortunately your payment could not be verified.\n\n"
+            "<b>Possible reasons</b>\n"
+            "• Screenshot unclear\n"
+            "• Wrong payment amount\n"
+            "• Payment not received\n\n"
+            "Please make the payment again and upload a new screenshot.",
         )
         await update_status(user_id, "Rejected")
     except TelegramAPIError:
@@ -359,7 +392,7 @@ async def reject(callback: CallbackQuery) -> None:
         await callback.answer("Could not reject this payment. Please try again.", show_alert=True)
         return
 
-    await mark_admin_message(callback, "REJECTED")
+    await mark_admin_message(callback, "Rejected")
     await callback.answer("Payment rejected")
 
 
@@ -372,8 +405,8 @@ async def stats(message: Message) -> None:
         total_users(), approved_users(), rejected_users(), pending_users()
     )
     await message.answer(
-        "<b>Bot Statistics</b>\n\n"
-        f"<b>Total users:</b> {total}\n"
+        f"{premium_header('Statistics')}\n\n"
+        f"<b>Total Users:</b> {total}\n"
         f"<b>Approved:</b> {approved}\n"
         f"<b>Rejected:</b> {rejected}\n"
         f"<b>Pending:</b> {len(pending)}"
@@ -390,7 +423,7 @@ async def pending(message: Message) -> None:
         await message.answer("There are no pending payment verifications.")
         return
 
-    lines = ["<b>Pending Payments</b>"]
+    lines = [f"{premium_header('Pending Payments')}"]
     for user in users:
         lines.extend(
             [
@@ -424,34 +457,30 @@ def format_member(user: tuple[object, ...], date_index: int) -> str:
 
 def admin_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 Users", callback_data="adm:users:0")],
-        [InlineKeyboardButton(text="⏳ Pending", callback_data="adm:pending:0")],
-        [InlineKeyboardButton(text="🟢 Active", callback_data="adm:active:0")],
-        [InlineKeyboardButton(text="🔴 Expired", callback_data="adm:expired:0")],
-        [InlineKeyboardButton(text="🔍 Search User", callback_data="adm:search")],
-        [InlineKeyboardButton(text="➕ Add User", callback_data="adm:adduser")],
-        [InlineKeyboardButton(text="➕ Extend Membership", callback_data="adm:extendinput")],
-        [InlineKeyboardButton(text="🗑 Delete User", callback_data="adm:deleteinput")],
-        [InlineKeyboardButton(text="📊 Statistics", callback_data="adm:stats")],
-        [InlineKeyboardButton(text="📤 Export Users", callback_data="adm:export")],
-        [InlineKeyboardButton(text="💾 Backup Database", callback_data="adm:backup")],
-        [InlineKeyboardButton(text="📥 Restore Database", callback_data="adm:restore")],
-        [InlineKeyboardButton(text="📣 Broadcast Message", callback_data="adm:broadcast")],
-        [InlineKeyboardButton(text="⬅ Close", callback_data="adm:close")],
+        [InlineKeyboardButton(text="Users", callback_data="adm:users:0"), InlineKeyboardButton(text="Pending", callback_data="adm:pending:0")],
+        [InlineKeyboardButton(text="Active", callback_data="adm:active:0"), InlineKeyboardButton(text="Expired", callback_data="adm:expired:0")],
+        [InlineKeyboardButton(text="Add User", callback_data="adm:adduser"), InlineKeyboardButton(text="Search User", callback_data="adm:search")],
+        [InlineKeyboardButton(text="Extend Membership", callback_data="adm:extendinput")],
+        [InlineKeyboardButton(text="Delete User", callback_data="adm:deleteinput")],
+        [InlineKeyboardButton(text="Statistics", callback_data="adm:stats"), InlineKeyboardButton(text="Export Users", callback_data="adm:export")],
+        [InlineKeyboardButton(text="Backup Database", callback_data="adm:backup"), InlineKeyboardButton(text="Restore Database", callback_data="adm:restore")],
+        [InlineKeyboardButton(text="Broadcast Message", callback_data="adm:broadcast")],
+        [InlineKeyboardButton(text="Close", callback_data="adm:close")],
     ])
 
 
 def user_details(user: tuple[object, ...]) -> str:
     username = f"@{user[1]}" if user[1] else "Not set"
     return (
-        f"<b>{escape(str(user[2]))}</b>\n\n"
-        f"<b>User ID:</b> <code>{user[0]}</code>\n"
-        f"<b>Username:</b> {escape(username)}\n"
-        f"<b>Plan:</b> {escape(str(user[3]))}\n"
-        f"<b>Status:</b> {escape(str(user[5]))}\n"
-        f"<b>Amount:</b> Rs {user[4]}\n"
-        f"<b>Approved Date:</b> {format_membership_date(user[7])}\n"
-        f"<b>Expiry Date:</b> {format_membership_date(user[8])}"
+        f"{premium_header('User Details', '👤')}\n\n"
+        f"<b>Name:</b>\n{escape(str(user[2]))}\n\n"
+        f"<b>User ID:</b>\n<code>{user[0]}</code>\n\n"
+        f"<b>Username:</b>\n{escape(username)}\n\n"
+        f"<b>Plan:</b>\n{escape(str(user[3]))}\n\n"
+        f"<b>Status:</b>\n{escape(str(user[5]))}\n\n"
+        f"<b>Amount:</b>\nRs {user[4]}\n\n"
+        f"<b>Approved:</b>\n{format_membership_date(user[7])}\n\n"
+        f"<b>Expires:</b>\n{format_membership_date(user[8])}"
     )
 
 
@@ -459,15 +488,15 @@ def user_actions(user_id: int, *, pending: bool = False, expired: bool = False) 
     rows: list[list[InlineKeyboardButton]] = []
     if pending:
         rows.append([
-            InlineKeyboardButton(text="✅ Approve", callback_data=f"adm:approve:{user_id}"),
-            InlineKeyboardButton(text="❌ Reject", callback_data=f"adm:reject:{user_id}"),
+            InlineKeyboardButton(text="Approve", callback_data=f"adm:approve:{user_id}"),
+            InlineKeyboardButton(text="Reject", callback_data=f"adm:reject:{user_id}"),
         ])
     # A profile remains manageable even if its membership has expired.
-    rows.append([InlineKeyboardButton(text="➕ Extend", callback_data=f"adm:extend:{user_id}")])
-    rows.append([InlineKeyboardButton(text="🔄 Reset Membership", callback_data=f"adm:resetask:{user_id}")])
-    rows.append([InlineKeyboardButton(text="✏️ Edit Membership", callback_data=f"adm:edit:{user_id}")])
-    rows.append([InlineKeyboardButton(text="🗑 Delete", callback_data=f"adm:confirmdel:{user_id}")])
-    rows.append([InlineKeyboardButton(text="⬅ Admin Menu", callback_data="adm:menu")])
+    rows.append([InlineKeyboardButton(text="Extend Membership", callback_data=f"adm:extend:{user_id}")])
+    rows.append([InlineKeyboardButton(text="Reset Membership", callback_data=f"adm:resetask:{user_id}")])
+    rows.append([InlineKeyboardButton(text="Edit Membership", callback_data=f"adm:edit:{user_id}")])
+    rows.append([InlineKeyboardButton(text="Delete User", callback_data=f"adm:confirmdel:{user_id}")])
+    rows.append([InlineKeyboardButton(text="Back", callback_data="adm:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -504,10 +533,10 @@ async def remove_channel_membership(user: tuple[object, ...]) -> None:
 
 async def show_admin_list(callback: CallbackQuery, category: str, page: int) -> None:
     loaders = {
-        "users": ("👥 All Users", get_all_users, False, False),
-        "pending": ("⏳ Pending Users", pending_users, True, False),
-        "active": ("🟢 Active Users", get_active_users, False, False),
-        "expired": ("🔴 Expired Users", get_expired_users, False, True),
+        "users": ("Users", get_all_users, False, False),
+        "pending": ("Pending Users", pending_users, True, False),
+        "active": ("Active Users", get_active_users, False, False),
+        "expired": ("Expired Users", get_expired_users, False, True),
     }
     title, loader, is_pending, is_expired = loaders[category]
     users = await loader()
@@ -515,9 +544,9 @@ async def show_admin_list(callback: CallbackQuery, category: str, page: int) -> 
     page = max(0, min(page, max(0, (len(users) - 1) // per_page)))
     selected = users[page * per_page:(page + 1) * per_page]
     if not selected:
-        await edit_admin_panel(callback, f"<b>{title}</b>\n\nNo users found.", admin_menu_keyboard())
+        await edit_admin_panel(callback, f"{premium_header(title)}\n\nNo users found.", admin_menu_keyboard())
         return
-    lines = [f"<b>{title}</b>\n<i>Page {page + 1} of {(len(users) - 1) // per_page + 1}</i>"]
+    lines = [f"{premium_header(title)}\n\n<i>Page {page + 1} of {(len(users) - 1) // per_page + 1}</i>"]
     keys: list[list[InlineKeyboardButton]] = []
     for number, user in enumerate(selected, start=page * per_page + 1):
         lines.append(
@@ -532,12 +561,12 @@ async def show_admin_list(callback: CallbackQuery, category: str, page: int) -> 
             keys.append([InlineKeyboardButton(text="Delete", callback_data=f"adm:confirmdel:{user[0]}"), InlineKeyboardButton(text="Extend", callback_data=f"adm:extend:{user[0]}")])
     navigation: list[InlineKeyboardButton] = []
     if page:
-        navigation.append(InlineKeyboardButton(text="◀ Previous", callback_data=f"adm:{category}:{page - 1}"))
+        navigation.append(InlineKeyboardButton(text="Previous", callback_data=f"adm:{category}:{page - 1}"))
     if (page + 1) * per_page < len(users):
-        navigation.append(InlineKeyboardButton(text="Next ▶", callback_data=f"adm:{category}:{page + 1}"))
+        navigation.append(InlineKeyboardButton(text="Next", callback_data=f"adm:{category}:{page + 1}"))
     if navigation:
         keys.append(navigation)
-    keys.append([InlineKeyboardButton(text="⬅ Admin Menu", callback_data="adm:menu")])
+    keys.append([InlineKeyboardButton(text="Back", callback_data="adm:menu")])
     await edit_admin_panel(callback, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keys))
 
 
@@ -574,9 +603,11 @@ async def activate_admin_added_user(admin_id: int, user_id: int, *, replace: boo
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Join Premium Channel", url=invite.invite_link)]])
     await bot.send_message(
         user_id,
-        "✅ <b>Your membership has been activated.</b>\n\n"
-        f"<b>Plan:</b> {escape(str(user[3]))}\n"
-        f"<b>Expiry:</b> {format_ist_datetime(expiry)}",
+        f"{premium_header('Membership Activated', '🎉')}\n\n"
+        "Your membership is now active.\n\n"
+        f"<b>Plan:</b>\n{escape(str(user[3]))}\n\n"
+        f"<b>Expires:</b>\n{format_ist_datetime(expiry)}\n\n"
+        "Tap the button below to join the premium channel.",
         reply_markup=keyboard,
     )
     return user, expiry
@@ -588,7 +619,13 @@ async def admin_panel(message: Message) -> None:
         await message.answer("❌ Access denied.")
         return
     admin_input_mode.pop(message.from_user.id, None)
-    await message.answer("<b>Admin User Management</b>", reply_markup=admin_menu_keyboard())
+    await message.answer(
+        f"{premium_header('Admin Dashboard')}\n\n"
+        "<b>Users</b>\nUsers • Pending • Active • Expired\n\n"
+        "<b>Management</b>\nAdd User • Search User • Extend Membership • Delete User\n\n"
+        "<b>Tools</b>\nStatistics • Export • Backup • Restore • Broadcast",
+        reply_markup=admin_menu_keyboard(),
+    )
 
 
 @dp.callback_query(F.data.startswith("adm:"))
@@ -601,15 +638,22 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
     parts = callback.data.split(":")
     action = parts[1]
     if action == "menu":
-        await edit_admin_panel(callback, "<b>Admin User Management</b>", admin_menu_keyboard())
+        await edit_admin_panel(
+            callback,
+            f"{premium_header('Admin Dashboard')}\n\n"
+            "<b>Users</b>\nUsers • Pending • Active • Expired\n\n"
+            "<b>Management</b>\nAdd User • Search User • Extend Membership • Delete User\n\n"
+            "<b>Tools</b>\nStatistics • Export • Backup • Restore • Broadcast",
+            admin_menu_keyboard(),
+        )
     elif action == "close":
-        await edit_admin_panel(callback, "<b>Admin panel closed.</b>")
+        await edit_admin_panel(callback, f"{premium_header('Admin Dashboard')}\n\nPanel closed.")
     elif action in {"users", "pending", "active", "expired"}:
         await show_admin_list(callback, action, int(parts[2]))
     elif action in {"search", "extendinput", "deleteinput"}:
         admin_input_mode[callback.from_user.id] = action
         prompt = "Send User ID"
-        await edit_admin_panel(callback, f"<b>{prompt}</b>\n\nUse a numeric Telegram User ID.", admin_menu_keyboard())
+        await edit_admin_panel(callback, f"{premium_header(prompt, '👤')}\n\nUse a numeric Telegram User ID.", admin_menu_keyboard())
     elif action == "adduser":
         admin_add_state.pop(callback.from_user.id, None)
         admin_input_mode[callback.from_user.id] = "adduser"
@@ -636,9 +680,9 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
         existing = await get_user(user_id)
         if existing is not None:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Replace Membership", callback_data="adm:addreplace")],
-                [InlineKeyboardButton(text="➕ Extend Existing", callback_data="adm:addextend")],
-                [InlineKeyboardButton(text="❌ Cancel", callback_data="adm:menu")],
+                [InlineKeyboardButton(text="Replace Membership", callback_data="adm:addreplace")],
+                [InlineKeyboardButton(text="Extend Existing", callback_data="adm:addextend")],
+                [InlineKeyboardButton(text="Cancel", callback_data="adm:menu")],
             ])
             await edit_admin_panel(callback, "<b>User already exists.</b>\n\nChoose how to apply the selected membership.", keyboard)
         else:
@@ -649,7 +693,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
                 await callback.answer("Membership could not be activated. Check bot access to the user and channel.", show_alert=True)
                 return
             admin_add_state.pop(callback.from_user.id, None)
-            await edit_admin_panel(callback, f"✅ <b>User Added Successfully</b>\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
+            await edit_admin_panel(callback, f"{premium_header('User Added', '✅')}\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
     elif action == "addcustom":
         if callback.from_user.id not in admin_add_state:
             await callback.answer("Start Add User again.", show_alert=True)
@@ -670,7 +714,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
             return
         admin_add_state.pop(callback.from_user.id, None)
         logger.info("Admin manually %s membership: admin=%s user=%s", "replaced" if action == "addreplace" else "extended", callback.from_user.id, user_id)
-        await edit_admin_panel(callback, f"✅ <b>User Added Successfully</b>\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
+        await edit_admin_panel(callback, f"{premium_header('User Added', '✅')}\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
     elif action == "export":
         users = await get_all_users()
         stream = io.StringIO(newline="")
@@ -690,8 +734,9 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
         admin_input_mode[callback.from_user.id] = "broadcast"
         await edit_admin_panel(callback, "<b>Send the broadcast message</b>\n\nIt will be delivered to all approved users.")
     elif action == "stats":
-        total, approved, rejected, pending, active, expired = await asyncio.gather(total_users(), approved_users(), rejected_users(), pending_users(), get_active_users(), get_expired_users())
-        await edit_admin_panel(callback, f"<b>📊 Statistics</b>\n\n<b>Total users:</b> {total}\n<b>Approved:</b> {approved}\n<b>Rejected:</b> {rejected}\n<b>Pending:</b> {len(pending)}\n<b>Active:</b> {len(active)}\n<b>Expired:</b> {len(expired)}", admin_menu_keyboard())
+        total, approved, rejected, pending, active, expired, all_users = await asyncio.gather(total_users(), approved_users(), rejected_users(), pending_users(), get_active_users(), get_expired_users(), get_all_users())
+        revenue = sum(int(user[4]) for user in all_users if user[5] == "Approved")
+        await edit_admin_panel(callback, f"{premium_header('Statistics')}\n\n<b>Total Users:</b> {total}\n<b>Pending:</b> {len(pending)}\n<b>Active:</b> {len(active)}\n<b>Expired:</b> {len(expired)}\n<b>Approved:</b> {approved}\n<b>Rejected:</b> {rejected}\n\n<b>Revenue:</b> Rs {revenue}", admin_menu_keyboard())
     else:
         user_id = int(parts[2])
         user = await search_user(user_id)
@@ -699,7 +744,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
             await callback.answer("User not found.", show_alert=True)
             return
         if action == "confirmdel":
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Yes", callback_data=f"adm:delete:{user_id}"), InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm:view:{user_id}")]])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Confirm", callback_data=f"adm:delete:{user_id}"), InlineKeyboardButton(text="Cancel", callback_data=f"adm:view:{user_id}")]])
             await edit_admin_panel(callback, "<b>⚠ Delete this user?</b>", keyboard)
         elif action == "delete":
             await remove_channel_membership(user)
@@ -713,7 +758,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
                 [InlineKeyboardButton(text="Change plan", callback_data=f"adm:editplan:{user_id}")],
                 [InlineKeyboardButton(text="Change expiry date", callback_data=f"adm:editexpiry:{user_id}")],
                 [InlineKeyboardButton(text="Change amount", callback_data=f"adm:editamount:{user_id}")],
-                [InlineKeyboardButton(text="⬅ Back", callback_data=f"adm:view:{user_id}")],
+                [InlineKeyboardButton(text="Back", callback_data=f"adm:view:{user_id}")],
             ])
             await edit_admin_panel(callback, f"<b>Edit Membership</b>\n\n{user_details(user)}", keyboard)
         elif action == "editplan":
@@ -735,7 +780,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
                 [InlineKeyboardButton(text="+7 Days", callback_data=f"adm:extenddays:{user_id}:7"), InlineKeyboardButton(text="+30 Days", callback_data=f"adm:extenddays:{user_id}:30")],
                 [InlineKeyboardButton(text="+90 Days", callback_data=f"adm:extenddays:{user_id}:90"), InlineKeyboardButton(text="+180 Days", callback_data=f"adm:extenddays:{user_id}:180")],
                 [InlineKeyboardButton(text="+365 Days", callback_data=f"adm:extenddays:{user_id}:365")],
-                [InlineKeyboardButton(text="⬅ Back", callback_data=f"adm:view:{user_id}")],
+                [InlineKeyboardButton(text="Back", callback_data=f"adm:view:{user_id}")],
             ])
             await edit_admin_panel(callback, f"<b>Extend membership for</b> <code>{user_id}</code>", keyboard)
         elif action == "extenddays":
@@ -744,7 +789,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
             logger.info("Admin extended membership: admin=%s user=%s days=%s", callback.from_user.id, user_id, days)
             await edit_admin_panel(callback, f"✅ Membership extended by <b>{days} days</b>.\n\nNew expiry: <b>{format_ist_datetime(expiry)}</b>", user_actions(user_id))
         elif action == "resetask":
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Yes", callback_data=f"adm:reset:{user_id}"), InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm:view:{user_id}")]])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Confirm", callback_data=f"adm:reset:{user_id}"), InlineKeyboardButton(text="Cancel", callback_data=f"adm:view:{user_id}")]])
             await edit_admin_panel(callback, "<b>⚠ Reset this membership?</b>", keyboard)
         elif action == "reset":
             await remove_channel_membership(user)
@@ -753,7 +798,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
         elif action == "reject":
             await update_status(user_id, "Rejected")
             try:
-                await bot.send_message(user_id, "<b>Payment Rejected</b>\n\nWe could not verify your payment. Please contact the administrator for assistance.")
+                await bot.send_message(user_id, f"{premium_header('Payment Rejected', '⚠️')}\n\nYour payment could not be verified. Please contact the administrator for assistance.")
             except TelegramAPIError:
                 logger.warning("Could not notify rejected user %s", user_id, exc_info=True)
             await edit_admin_panel(callback, "✅ User rejected.", admin_menu_keyboard())
@@ -766,7 +811,7 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
                     await callback.answer("User record no longer exists.", show_alert=True)
                     return
                 join_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Join Premium Channel", url=invite.invite_link)]])
-                await bot.send_message(user_id, "<b>Payment Approved</b>\n\nUse the button below to request access to the private channel.\n\nYour membership expires on\n\n" + f"<b>{format_ist_datetime(approval.expiry_date)}</b>.", reply_markup=join_keyboard)
+                await bot.send_message(user_id, f"{premium_header('Membership Activated', '🎉')}\n\n<b>Plan:</b>\n{escape(approval.plan)}\n\n<b>Status:</b>\nActive\n\n<b>Expires:</b>\n{format_ist_datetime(approval.expiry_date)}\n\nTap the button below to join the premium channel.", reply_markup=join_keyboard)
             except TelegramAPIError:
                 logger.exception("Panel approval failed for user %s", user_id)
                 await callback.answer("Could not approve this user. Check channel permissions.", show_alert=True)
@@ -827,9 +872,9 @@ async def admin_panel_user_id_input(message: Message) -> None:
         user_id = int(state["user_id"])
         if await get_user(user_id):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Replace Membership", callback_data="adm:addreplace")],
-                [InlineKeyboardButton(text="➕ Extend Existing", callback_data="adm:addextend")],
-                [InlineKeyboardButton(text="❌ Cancel", callback_data="adm:menu")],
+                [InlineKeyboardButton(text="Replace Membership", callback_data="adm:addreplace")],
+                [InlineKeyboardButton(text="Extend Existing", callback_data="adm:addextend")],
+                [InlineKeyboardButton(text="Cancel", callback_data="adm:menu")],
             ])
             await message.answer("<b>User already exists.</b>", reply_markup=keyboard)
         else:
@@ -892,10 +937,10 @@ async def admin_panel_user_id_input(message: Message) -> None:
         await message.answer("User not found.")
         return
     if mode == "deleteinput":
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Yes", callback_data=f"adm:delete:{user_id}"), InlineKeyboardButton(text="❌ Cancel", callback_data="adm:menu")]])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Confirm", callback_data=f"adm:delete:{user_id}"), InlineKeyboardButton(text="Cancel", callback_data="adm:menu")]])
         await message.answer("<b>⚠ Delete this user?</b>", reply_markup=keyboard)
     elif mode == "extendinput":
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Choose duration", callback_data=f"adm:extend:{user_id}")]])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Choose Duration", callback_data=f"adm:extend:{user_id}")]])
         await message.answer(user_details(user), reply_markup=keyboard)
     else:
         logger.info("Admin searched user: admin=%s user=%s", message.from_user.id, user_id)
