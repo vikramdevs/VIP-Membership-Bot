@@ -1,0 +1,6 @@
+aiogram
+python-dotenv
+aiosqlite
+qrcode
+Pillow
+apscheduler
