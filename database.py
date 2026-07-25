@@ -270,6 +270,53 @@ async def reset_membership(user_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+async def save_admin_membership(
+    user_id: int,
+    username: str | None,
+    full_name: str,
+    plan: str,
+    amount: int,
+    expiry_days: int,
+) -> datetime:
+    """Create or replace an immediately approved membership from the admin panel."""
+    now = ist_now()
+    expiry_date = now + timedelta(days=expiry_days)
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """
+            INSERT INTO users (
+                user_id, username, full_name, plan, amount, status, expiry_days,
+                approved_at, expiry_date, expired_at, join_request_link
+            ) VALUES (?, ?, ?, ?, ?, 'Approved', ?, ?, ?, NULL, NULL)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username, full_name = excluded.full_name,
+                plan = excluded.plan, amount = excluded.amount, status = 'Approved',
+                expiry_days = excluded.expiry_days, approved_at = excluded.approved_at,
+                expiry_date = excluded.expiry_date, expired_at = NULL,
+                join_request_link = NULL
+            """,
+            (
+                user_id, username, full_name, plan, amount, expiry_days,
+                datetime_to_storage(now), datetime_to_storage(expiry_date),
+            ),
+        )
+        await db.commit()
+    return expiry_date
+
+
+async def update_membership_field(user_id: int, field: str, value: object) -> bool:
+    """Update one allow-listed editable membership field."""
+    allowed = {"plan", "amount", "expiry_days", "expiry_date"}
+    if field not in allowed:
+        raise ValueError("Unsupported membership field")
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            f"UPDATE users SET {field} = ? WHERE user_id = ?", (value, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def save_join_request_link(user_id: int, invite_link: str) -> None:
     """Store the reusable join-request invite link issued to a member."""
     async with aiosqlite.connect(DB_NAME) as db:

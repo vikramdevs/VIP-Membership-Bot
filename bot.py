@@ -1,7 +1,11 @@
 """Telegram VIP membership bot."""
 
 import asyncio
+import csv
+import io
 import logging
+import os
+import sqlite3
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -35,6 +39,8 @@ from database import (
     approved_users,
     delete_user,
     datetime_from_storage,
+    datetime_to_storage,
+    DB_NAME,
     expired_users,
     extend_membership,
     get_active_users,
@@ -49,10 +55,12 @@ from database import (
     rejected_users,
     save_user,
     save_join_request_link,
+    save_admin_membership,
     search_user,
     reset_membership,
     total_users,
     update_status,
+    update_membership_field,
 )
 from scheduler import expire_due_memberships, run_expiry_scheduler
 
@@ -65,6 +73,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 admin_input_mode: dict[int, str] = {}
+admin_add_state: dict[int, dict[str, object]] = {}
 @dp.channel_post()
 async def debug_channel(message: Message):
     logger.info("=" * 50)
@@ -420,9 +429,14 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🟢 Active", callback_data="adm:active:0")],
         [InlineKeyboardButton(text="🔴 Expired", callback_data="adm:expired:0")],
         [InlineKeyboardButton(text="🔍 Search User", callback_data="adm:search")],
+        [InlineKeyboardButton(text="➕ Add User", callback_data="adm:adduser")],
         [InlineKeyboardButton(text="➕ Extend Membership", callback_data="adm:extendinput")],
         [InlineKeyboardButton(text="🗑 Delete User", callback_data="adm:deleteinput")],
         [InlineKeyboardButton(text="📊 Statistics", callback_data="adm:stats")],
+        [InlineKeyboardButton(text="📤 Export Users", callback_data="adm:export")],
+        [InlineKeyboardButton(text="💾 Backup Database", callback_data="adm:backup")],
+        [InlineKeyboardButton(text="📥 Restore Database", callback_data="adm:restore")],
+        [InlineKeyboardButton(text="📣 Broadcast Message", callback_data="adm:broadcast")],
         [InlineKeyboardButton(text="⬅ Close", callback_data="adm:close")],
     ])
 
@@ -448,9 +462,10 @@ def user_actions(user_id: int, *, pending: bool = False, expired: bool = False) 
             InlineKeyboardButton(text="✅ Approve", callback_data=f"adm:approve:{user_id}"),
             InlineKeyboardButton(text="❌ Reject", callback_data=f"adm:reject:{user_id}"),
         ])
-    if not expired:
-        rows.append([InlineKeyboardButton(text="➕ Extend", callback_data=f"adm:extend:{user_id}")])
-        rows.append([InlineKeyboardButton(text="🔄 Reset Membership", callback_data=f"adm:resetask:{user_id}")])
+    # A profile remains manageable even if its membership has expired.
+    rows.append([InlineKeyboardButton(text="➕ Extend", callback_data=f"adm:extend:{user_id}")])
+    rows.append([InlineKeyboardButton(text="🔄 Reset Membership", callback_data=f"adm:resetask:{user_id}")])
+    rows.append([InlineKeyboardButton(text="✏️ Edit Membership", callback_data=f"adm:edit:{user_id}")])
     rows.append([InlineKeyboardButton(text="🗑 Delete", callback_data=f"adm:confirmdel:{user_id}")])
     rows.append([InlineKeyboardButton(text="⬅ Admin Menu", callback_data="adm:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -526,6 +541,47 @@ async def show_admin_list(callback: CallbackQuery, category: str, page: int) -> 
     await edit_admin_panel(callback, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keys))
 
 
+def admin_plan_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="7 Days", callback_data=f"{prefix}:7"), InlineKeyboardButton(text="30 Days", callback_data=f"{prefix}:30")],
+        [InlineKeyboardButton(text="90 Days", callback_data=f"{prefix}:90"), InlineKeyboardButton(text="180 Days", callback_data=f"{prefix}:180")],
+        [InlineKeyboardButton(text="365 Days", callback_data=f"{prefix}:365")],
+    ])
+
+
+def plan_name_for_days(days: int) -> str:
+    return {7: "7 Days", 30: "1 Month", 90: "3 Months", 180: "6 Months", 365: "12 Months"}[days]
+
+
+async def activate_admin_added_user(admin_id: int, user_id: int, *, replace: bool) -> tuple[tuple[object, ...], datetime]:
+    """Persist an add-user selection and issue its new channel invite link."""
+    state = admin_add_state[admin_id]
+    days = int(state["days"])
+    if replace:
+        expiry = await save_admin_membership(
+            user_id, state["username"], str(state["full_name"]), plan_name_for_days(days),
+            int(state["amount"]), days,
+        )
+    else:
+        expiry = await extend_membership(user_id, days)
+        if expiry is None:
+            raise RuntimeError("Membership record disappeared")
+    invite = await bot.create_chat_invite_link(chat_id=CHANNEL_ID, creates_join_request=True)
+    await save_join_request_link(user_id, invite.invite_link)
+    user = await get_user(user_id)
+    if user is None:
+        raise RuntimeError("Membership record disappeared")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Join Premium Channel", url=invite.invite_link)]])
+    await bot.send_message(
+        user_id,
+        "✅ <b>Your membership has been activated.</b>\n\n"
+        f"<b>Plan:</b> {escape(str(user[3]))}\n"
+        f"<b>Expiry:</b> {format_ist_datetime(expiry)}",
+        reply_markup=keyboard,
+    )
+    return user, expiry
+
+
 @dp.message(Command("admin"))
 async def admin_panel(message: Message) -> None:
     if not is_admin(message.from_user.id):
@@ -554,6 +610,85 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
         admin_input_mode[callback.from_user.id] = action
         prompt = "Send User ID"
         await edit_admin_panel(callback, f"<b>{prompt}</b>\n\nUse a numeric Telegram User ID.", admin_menu_keyboard())
+    elif action == "adduser":
+        admin_add_state.pop(callback.from_user.id, None)
+        admin_input_mode[callback.from_user.id] = "adduser"
+        await edit_admin_panel(callback, "<b>Send Telegram User ID</b>\n\nExample: <code>6043346963</code>", admin_menu_keyboard())
+    elif action == "addplan":
+        state = admin_add_state.get(callback.from_user.id)
+        if state is None:
+            await callback.answer("Start Add User again.", show_alert=True)
+            return
+        state["days"] = int(parts[2])
+        amount_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="99", callback_data="adm:addamount:99"), InlineKeyboardButton(text="199", callback_data="adm:addamount:199"), InlineKeyboardButton(text="499", callback_data="adm:addamount:499")],
+            [InlineKeyboardButton(text="899", callback_data="adm:addamount:899"), InlineKeyboardButton(text="1299", callback_data="adm:addamount:1299")],
+            [InlineKeyboardButton(text="Custom amount", callback_data="adm:addcustom")],
+        ])
+        await edit_admin_panel(callback, "<b>Enter payment amount</b>\n\nChoose a suggestion or use a custom amount.", amount_keyboard)
+    elif action == "addamount":
+        state = admin_add_state.get(callback.from_user.id)
+        if state is None:
+            await callback.answer("Start Add User again.", show_alert=True)
+            return
+        state["amount"] = int(parts[2])
+        user_id = int(state["user_id"])
+        existing = await get_user(user_id)
+        if existing is not None:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Replace Membership", callback_data="adm:addreplace")],
+                [InlineKeyboardButton(text="➕ Extend Existing", callback_data="adm:addextend")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="adm:menu")],
+            ])
+            await edit_admin_panel(callback, "<b>User already exists.</b>\n\nChoose how to apply the selected membership.", keyboard)
+        else:
+            try:
+                user, expiry = await activate_admin_added_user(callback.from_user.id, user_id, replace=True)
+            except TelegramAPIError:
+                logger.exception("Could not activate manually added user %s", user_id)
+                await callback.answer("Membership could not be activated. Check bot access to the user and channel.", show_alert=True)
+                return
+            admin_add_state.pop(callback.from_user.id, None)
+            await edit_admin_panel(callback, f"✅ <b>User Added Successfully</b>\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
+    elif action == "addcustom":
+        if callback.from_user.id not in admin_add_state:
+            await callback.answer("Start Add User again.", show_alert=True)
+            return
+        admin_input_mode[callback.from_user.id] = "addamount"
+        await edit_admin_panel(callback, "<b>Enter payment amount</b>\n\nSend a positive whole-number amount.")
+    elif action in {"addreplace", "addextend"}:
+        state = admin_add_state.get(callback.from_user.id)
+        if state is None:
+            await callback.answer("Start Add User again.", show_alert=True)
+            return
+        user_id = int(state["user_id"])
+        try:
+            user, expiry = await activate_admin_added_user(callback.from_user.id, user_id, replace=action == "addreplace")
+        except TelegramAPIError:
+            logger.exception("Could not apply manual membership for user %s", user_id)
+            await callback.answer("Membership could not be activated. Check bot access to the user and channel.", show_alert=True)
+            return
+        admin_add_state.pop(callback.from_user.id, None)
+        logger.info("Admin manually %s membership: admin=%s user=%s", "replaced" if action == "addreplace" else "extended", callback.from_user.id, user_id)
+        await edit_admin_panel(callback, f"✅ <b>User Added Successfully</b>\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}", admin_menu_keyboard())
+    elif action == "export":
+        users = await get_all_users()
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream)
+        writer.writerow(["user_id", "username", "full_name", "plan", "amount", "status", "expiry_days", "approved_at", "expiry_date", "expired_at", "join_request_link"])
+        writer.writerows(users)
+        from aiogram.types import BufferedInputFile
+        await bot.send_document(callback.from_user.id, BufferedInputFile(stream.getvalue().encode("utf-8"), filename="users.csv"))
+        await edit_admin_panel(callback, "✅ Users exported successfully.", admin_menu_keyboard())
+    elif action == "backup":
+        await bot.send_document(callback.from_user.id, FSInputFile(DB_NAME, filename="database.db"))
+        await edit_admin_panel(callback, "✅ Database backup sent.", admin_menu_keyboard())
+    elif action == "restore":
+        admin_input_mode[callback.from_user.id] = "restore"
+        await edit_admin_panel(callback, "<b>Upload database.db</b>\n\nThe current database will be replaced after basic SQLite validation.")
+    elif action == "broadcast":
+        admin_input_mode[callback.from_user.id] = "broadcast"
+        await edit_admin_panel(callback, "<b>Send the broadcast message</b>\n\nIt will be delivered to all approved users.")
     elif action == "stats":
         total, approved, rejected, pending, active, expired = await asyncio.gather(total_users(), approved_users(), rejected_users(), pending_users(), get_active_users(), get_expired_users())
         await edit_admin_panel(callback, f"<b>📊 Statistics</b>\n\n<b>Total users:</b> {total}\n<b>Approved:</b> {approved}\n<b>Rejected:</b> {rejected}\n<b>Pending:</b> {len(pending)}\n<b>Active:</b> {len(active)}\n<b>Expired:</b> {len(expired)}", admin_menu_keyboard())
@@ -573,6 +708,28 @@ async def admin_panel_callback(callback: CallbackQuery) -> None:
             await edit_admin_panel(callback, "✅ User deleted successfully.", admin_menu_keyboard())
         elif action == "view":
             await edit_admin_panel(callback, user_details(user), user_actions(user_id, pending=user[5] == "Pending", expired=user[5] == "Expired"))
+        elif action == "edit":
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Change plan", callback_data=f"adm:editplan:{user_id}")],
+                [InlineKeyboardButton(text="Change expiry date", callback_data=f"adm:editexpiry:{user_id}")],
+                [InlineKeyboardButton(text="Change amount", callback_data=f"adm:editamount:{user_id}")],
+                [InlineKeyboardButton(text="⬅ Back", callback_data=f"adm:view:{user_id}")],
+            ])
+            await edit_admin_panel(callback, f"<b>Edit Membership</b>\n\n{user_details(user)}", keyboard)
+        elif action == "editplan":
+            await edit_admin_panel(callback, "<b>Select Membership Plan</b>", admin_plan_keyboard(f"adm:editplansave:{user_id}"))
+        elif action == "editplansave":
+            days = int(parts[3])
+            await update_membership_field(user_id, "plan", plan_name_for_days(days))
+            await update_membership_field(user_id, "expiry_days", days)
+            updated = await get_user(user_id)
+            await edit_admin_panel(callback, "✅ Plan updated.\n\n" + user_details(updated), user_actions(user_id, pending=updated[5] == "Pending", expired=updated[5] == "Expired"))
+        elif action == "editexpiry":
+            admin_input_mode[callback.from_user.id] = f"editexpiry:{user_id}"
+            await edit_admin_panel(callback, "<b>Send expiry date and time</b>\n\nFormat: <code>DD-MM-YYYY HH:MM</code> (IST)")
+        elif action == "editamount":
+            admin_input_mode[callback.from_user.id] = f"editamount:{user_id}"
+            await edit_admin_panel(callback, "<b>Enter payment amount</b>\n\nSend a positive whole-number amount.")
         elif action == "extend":
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="+7 Days", callback_data=f"adm:extenddays:{user_id}:7"), InlineKeyboardButton(text="+30 Days", callback_data=f"adm:extenddays:{user_id}:30")],
@@ -632,6 +789,98 @@ async def admin_panel_user_id_input(message: Message) -> None:
     if not is_admin(message.from_user.id):
         await message.answer("❌ Access denied.")
         return
+    if mode == "adduser":
+        try:
+            user_id = int(message.text.strip())
+        except ValueError:
+            await message.answer("Send a numeric Telegram User ID.")
+            return
+        try:
+            chat = await bot.get_chat(user_id)
+        except TelegramAPIError:
+            await message.answer("Could not fetch this user with getChat. The user must have started the bot.")
+            return
+        full_name = getattr(chat, "full_name", None) or " ".join(
+            part for part in (getattr(chat, "first_name", None), getattr(chat, "last_name", None)) if part
+        ) or str(user_id)
+        admin_add_state[message.from_user.id] = {
+            "user_id": user_id, "username": getattr(chat, "username", None), "full_name": full_name,
+        }
+        admin_input_mode.pop(message.from_user.id, None)
+        await message.answer("<b>Select Membership Plan</b>", reply_markup=admin_plan_keyboard("adm:addplan"))
+        return
+    if mode == "addamount":
+        try:
+            amount = int(message.text.strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Send a positive whole-number amount.")
+            return
+        state = admin_add_state.get(message.from_user.id)
+        if state is None:
+            admin_input_mode.pop(message.from_user.id, None)
+            await message.answer("Start Add User again from /admin.")
+            return
+        state["amount"] = amount
+        admin_input_mode.pop(message.from_user.id, None)
+        user_id = int(state["user_id"])
+        if await get_user(user_id):
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Replace Membership", callback_data="adm:addreplace")],
+                [InlineKeyboardButton(text="➕ Extend Existing", callback_data="adm:addextend")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="adm:menu")],
+            ])
+            await message.answer("<b>User already exists.</b>", reply_markup=keyboard)
+        else:
+            try:
+                user, expiry = await activate_admin_added_user(message.from_user.id, user_id, replace=True)
+            except TelegramAPIError:
+                logger.exception("Could not activate manually added user %s", user_id)
+                await message.answer("Membership could not be activated. Check bot access to the user and channel.")
+                return
+            admin_add_state.pop(message.from_user.id, None)
+            await message.answer(f"✅ <b>User Added Successfully</b>\n\n<b>ID:</b> <code>{user_id}</code>\n<b>Name:</b> {escape(str(user[2]))}\n<b>Plan:</b> {escape(str(user[3]))}\n<b>Expiry:</b> {format_ist_datetime(expiry)}")
+        return
+    if mode == "broadcast":
+        admin_input_mode.pop(message.from_user.id, None)
+        recipients = [user[0] for user in await get_all_users() if user[5] == "Approved"]
+        delivered = 0
+        for user_id in recipients:
+            try:
+                await bot.send_message(int(user_id), message.text)
+                delivered += 1
+            except TelegramAPIError:
+                logger.warning("Broadcast failed for user %s", user_id)
+        await message.answer(f"✅ Broadcast sent to <b>{delivered}</b> approved users.")
+        return
+    if mode.startswith("editamount:"):
+        try:
+            amount = int(message.text.strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Send a positive whole-number amount.")
+            return
+        user_id = int(mode.split(":", maxsplit=1)[1])
+        await update_membership_field(user_id, "amount", amount)
+        admin_input_mode.pop(message.from_user.id, None)
+        await message.answer("✅ Amount updated.", reply_markup=user_actions(user_id))
+        return
+    if mode.startswith("editexpiry:"):
+        try:
+            expiry = datetime.strptime(message.text.strip(), "%d-%m-%Y %H:%M").replace(tzinfo=IST)
+        except ValueError:
+            await message.answer("Use format: <code>DD-MM-YYYY HH:MM</code> (IST).")
+            return
+        user_id = int(mode.split(":", maxsplit=1)[1])
+        await update_membership_field(user_id, "expiry_date", datetime_to_storage(expiry))
+        admin_input_mode.pop(message.from_user.id, None)
+        await message.answer("✅ Expiry date updated.", reply_markup=user_actions(user_id))
+        return
+    if mode == "restore":
+        await message.answer("Upload the <code>database.db</code> file as a document.")
+        return
     try:
         user_id = int(message.text.strip())
     except ValueError:
@@ -651,6 +900,37 @@ async def admin_panel_user_id_input(message: Message) -> None:
     else:
         logger.info("Admin searched user: admin=%s user=%s", message.from_user.id, user_id)
         await message.answer(user_details(user), reply_markup=user_actions(user_id, pending=user[5] == "Pending", expired=user[5] == "Expired"))
+
+
+@dp.message(F.document)
+async def restore_database_document(message: Message) -> None:
+    """Restore a validated SQLite database only after the admin chose Restore."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Access denied.")
+        return
+    if admin_input_mode.get(message.from_user.id) != "restore":
+        return
+    document = message.document
+    if document is None or document.file_name != "database.db":
+        await message.answer("Upload a file named <code>database.db</code>.")
+        return
+    restore_path = Path(f"{DB_NAME}.restore")
+    try:
+        await bot.download(document, destination=restore_path)
+        with sqlite3.connect(restore_path) as restored:
+            check = restored.execute("PRAGMA quick_check").fetchone()
+            table = restored.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+        if check != ("ok",) or table is None:
+            raise ValueError("not a valid membership database")
+        os.replace(restore_path, DB_NAME)
+    except (TelegramAPIError, OSError, sqlite3.DatabaseError, ValueError):
+        logger.exception("Database restore failed")
+        if restore_path.exists():
+            restore_path.unlink()
+        await message.answer("Database restore failed. Upload a valid database.db backup.")
+        return
+    admin_input_mode.pop(message.from_user.id, None)
+    await message.answer("✅ Database restored successfully.")
 
 
 @dp.message(Command("active"))
